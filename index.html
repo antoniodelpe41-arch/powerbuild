@@ -250,7 +250,8 @@ input[type=number]{-moz-appearance:textfield}
 <div class="tabs">
   <button class="tab on" id="t-sess" onclick="goTab('sess')">SESIÓN</button>
   <button class="tab"    id="t-hist" onclick="goTab('hist')">HISTORIAL</button>
-  <button class="tab"    id="t-prog" onclick="goTab('prog')">PROGRESIÓN</button>
+  <button class="tab"    id="t-prog" onclick="goTab('prog')">PROGRESO</button>
+  <button class="tab"    id="t-coach" onclick="goTab('coach')">COACH</button>
 </div>
 
 <div class="pwa hide" id="pwa-hint">
@@ -381,6 +382,16 @@ input[type=number]{-moz-appearance:textfield}
 
 <div id="v-prog" class="view">
   <div class="pgwrap" id="pgwrap"></div>
+</div>
+
+<div id="v-coach" class="view">
+  <div class="chat-intro">🏋️ <b>Tu entrenador</b> · conoce tus ejercicios, pesos y rutina<br>Pregúntale lo que necesites</div>
+  <div class="chat-scroll" id="chat-scroll"></div>
+  <div class="chat-chips" id="chat-chips"></div>
+  <div class="chat-input-bar">
+    <input type="text" class="chat-input" id="chat-input" placeholder="Escribe tu pregunta..." onkeydown="if(event.key==='Enter')coachSend()">
+    <button class="chat-send" onclick="coachSend()">↑</button>
+  </div>
 </div>
 
 <div class="tbar" id="tbar">
@@ -844,13 +855,14 @@ function nextSessId(){
 
 /* ══ TABS ══ */
 function goTab(t){
-  ['sess','hist','prog'].forEach(function(id){
+  ['sess','hist','prog','coach'].forEach(function(id){
     var tb=document.getElementById('t-'+id);if(tb)tb.className='tab'+(t===id?' on':'');
     var vl=document.getElementById('v-'+id);if(vl)vl.className='view'+(t===id?' on':'');
   });
   document.getElementById('v-ex').className='view';
   if(t==='hist')renderHist();
   if(t==='prog')renderProg();
+  if(t==='coach')initCoach();
 }
 
 /* ══ NEXT CARD ══ */
@@ -1226,7 +1238,374 @@ function mkSVG(pts,col){
   return svg;
 }
 
-/* ══ PWA ══ */
+/* ══ COACH (asistente local) ══ */
+var coachStarted=false;
+var CHIPS=['📊 Analiza mi entrenamiento','¿Qué debo mejorar?','¿Qué toca hoy?','Solo puedo ir 1 día','Mi equilibrio empuje/tirón','¿Cómo voy en press banca?','Mis récords','Mi racha','¿Cuánta proteína?','¿Cuántas series por semana?'];
+
+function initCoach(){
+  document.getElementById('chat-chips').innerHTML=CHIPS.map(function(c){return '<button class="chip" onclick="coachChip(this)">'+escHtml(c)+'</button>';}).join('');
+  if(!coachStarted){
+    coachStarted=true;
+    var next=nextSessId(),ns=gs(next);
+    botSay('¡Hola Antonio! 💪 Soy tu entrenador y <b>analizo tus datos reales</b>: tus pesos, tu progreso, tu volumen por músculo y tu rutina.<br><br>Hoy te tocaría la <span class="m-sess" style="background:'+ns.col+';color:'+(ns.dark?'#111':'#fff')+'">'+next+'</span> ('+escHtml(ns.name)+').<br><br>Prueba a pedirme <b>"analiza mi entrenamiento"</b> y te diré objetivamente qué progresa, qué se estanca y qué mejorar.');
+  }
+}
+function coachChip(el){document.getElementById('chat-input').value=el.textContent;coachSend();}
+function coachSend(){
+  var inp=document.getElementById('chat-input');
+  var txt=inp.value.trim();if(!txt)return;
+  userSay(txt);inp.value='';
+  setTimeout(function(){botSay(coachReply(txt));},250);
+}
+function userSay(t){addMsg(escHtml(t),'user');}
+function botSay(html){addMsg(html,'bot');}
+function addMsg(html,cls){
+  var s=document.getElementById('chat-scroll');
+  var d=document.createElement('div');d.className='msg '+cls;d.innerHTML=html;
+  s.appendChild(d);s.scrollTop=s.scrollHeight;
+}
+function norm(s){return s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');}
+function sessTag(id){var s=gs(id);return '<span class="m-sess" style="background:'+s.col+';color:'+(s.dark?'#111':'#fff')+'">'+id+'</span>';}
+
+function sessExList(id){
+  var s=gs(id);
+  return '<ul>'+s.exs.map(function(ex,i){return '<li>'+escHtml(vname(id,i))+'</li>';}).join('')+'</ul>';
+}
+function findExercise(q){
+  /* busca un ejercicio por nombre en todas las sesiones */
+  var hits=[];
+  P.forEach(function(s){s.exs.forEach(function(ex,i){
+    ex.vs.forEach(function(v,vi){
+      var nm=norm(vnameCustom(s.id,i,vi));
+      if(nm.indexOf(q)!==-1||q.indexOf(nm.split(' ')[0])!==-1){hits.push({sid:s.id,i:i});}
+    });
+  });});
+  return hits;
+}
+
+/* ══ MOTOR DE ANÁLISIS DE DATOS ══ */
+/* Mapa de grupo muscular principal por ejercicio (sesión_índice) */
+var MG={
+ A_0:['pecho'],A_1:['espalda'],A_2:['hombro'],A_3:['espalda'],A_4:['pierna','espalda'],A_5:['biceps'],
+ B_0:['pecho'],B_1:['espalda'],B_2:['pecho'],B_3:['espalda'],B_4:['hombro'],B_5:['triceps'],
+ C_0:['pecho'],C_1:['espalda'],C_2:['triceps'],C_3:['hombro'],C_4:['pierna'],C_5:['biceps'],
+ D_0:['pierna'],D_1:['pierna'],D_2:['pierna'],D_3:['hombro'],D_4:['hombro'],D_5:['core']
+};
+var MGL={pecho:'Pecho',espalda:'Espalda',hombro:'Hombro',biceps:'Bíceps',triceps:'Tríceps',pierna:'Pierna',core:'Core'};
+
+function allEntries(){
+  var out=[];
+  P.forEach(function(s){s.exs.forEach(function(ex,i){
+    ents(s.id,i).forEach(function(e){
+      var mx=0,vol=0,ns=(e.sets||[]).length;
+      (e.sets||[]).forEach(function(sv){var w=parseFloat(sv.w)||0,r=parseInt(sv.r)||0;if(w>mx)mx=w;vol+=w*r;});
+      out.push({sid:s.id,i:i,date:e.date,nsets:ns,maxW:mx,vol:vol});
+    });
+  });});
+  return out;
+}
+function weeklyVolByMuscle(){
+  var cutoff=new Date(td());cutoff.setDate(cutoff.getDate()-28);
+  var mg={},wk={};
+  allEntries().forEach(function(e){
+    var d=new Date(e.date);
+    if(d>=cutoff){
+      wk[d.getFullYear()+'-'+isoW(d)]=1;
+      (MG[e.sid+'_'+e.i]||[]).forEach(function(g){mg[g]=(mg[g]||0)+e.nsets;});
+    }
+  });
+  var nw=Math.max(1,Object.keys(wk).length);
+  Object.keys(mg).forEach(function(k){mg[k]=Math.round(mg[k]/nw*10)/10;});
+  return {vol:mg,weeks:nw};
+}
+function exTrend(sid,i){
+  var es=ents(sid,i),pts=[];
+  es.forEach(function(e){var mx=0;(e.sets||[]).forEach(function(sv){var w=parseFloat(sv.w)||0;if(w>mx)mx=w;});if(mx>0)pts.push(mx);});
+  if(pts.length<2)return{status:'pocos',n:pts.length};
+  var first=pts[0],lastv=pts[pts.length-1],best=Math.max.apply(null,pts);
+  var bestIdx=0;pts.forEach(function(v,idx){if(v>=best)bestIdx=idx;});
+  var sinceBest=pts.length-1-bestIdx;
+  var status=lastv>first?'progresa':lastv<first?'baja':'estancado';
+  return{status:status,first:first,last:lastv,best:best,n:pts.length,sinceBest:sinceBest,diff:Math.round((lastv-first)*10)/10};
+}
+function volVerdict(m,v){
+  if(m==='core')return'';
+  if(v<8)return' <span style="color:#FF4D4D">bajo</span>';
+  if(v<=20)return' <span style="color:#3DFFA0">óptimo</span>';
+  return' <span style="color:#FFD23F">alto</span>';
+}
+function coachAnalysis(){
+  var all=allEntries();
+  var dm=buildMap(),dates=Object.keys(dm).sort();
+  if(all.length<2||dates.length<2)return 'Aún tengo pocos datos para un análisis fiable. Registra al menos 3-4 entrenamientos con tus pesos y te daré un análisis completo: volumen por músculo, qué progresa, qué se estanca y tu equilibrio muscular. 💪';
+  var html='📊 <b>ANÁLISIS DE TU ENTRENAMIENTO</b><br>';
+
+  /* 1 · Frecuencia */
+  var fD=new Date(dates[0]),lD=new Date(dates[dates.length-1]);
+  var span=Math.max(1,(lD-fD)/(7*86400000));
+  var freq=Math.round(dates.length/span*10)/10;
+  html+='<br><b>🗓 Frecuencia:</b> '+freq+' días/semana ('+dates.length+' entrenos en '+Math.ceil(span)+' sem). ';
+  html+=freq>=3?'Constancia excelente. 🔥':freq>=2?'Bien, pero 3 días/sem sería lo ideal.':'Intenta subir a 2-3 días/sem para mejores resultados.';
+
+  /* 2 · Volumen por músculo */
+  var w=weeklyVolByMuscle(),vol=w.vol;
+  var order=['pecho','espalda','hombro','biceps','triceps','pierna','core'];
+  var hasVol=Object.keys(vol).length>0;
+  if(hasVol){
+    html+='<br><br><b>📐 Volumen semanal por músculo</b> (últimas '+w.weeks+' sem):<ul>';
+    order.forEach(function(m){if(vol[m]!==undefined)html+='<li>'+MGL[m]+': <b>'+vol[m]+'</b> series'+volVerdict(m,vol[m])+'</li>';});
+    html+='</ul><span style="font-size:11px;color:#777">Óptimo hipertrofia: 10-20 series/músculo/semana</span>';
+  }
+
+  /* 3 · Balance empuje / tirón */
+  var push=(vol.pecho||0)+(vol.hombro||0)+(vol.triceps||0);
+  var pull=(vol.espalda||0)+(vol.biceps||0);
+  if(push>0&&pull>0){
+    var ratio=push/pull;
+    html+='<br><br><b>⚖️ Equilibrio empuje/tirón:</b> '+Math.round(push)+' vs '+Math.round(pull)+' series. ';
+    if(ratio>1.4)html+='Haces bastante más empuje que tirón — añade algo de espalda para equilibrar la postura (importante por el pádel).';
+    else if(ratio<0.7)html+='Haces más tirón que empuje — equilibrado para la postura, suma algo de pecho/hombro si quieres simetría.';
+    else html+='Bien equilibrado. 👌';
+  }
+
+  /* 4 · Progresión por ejercicio */
+  var prog=[],stall=[],down=[];
+  P.forEach(function(s){s.exs.forEach(function(ex,i){
+    var t=exTrend(s.id,i);
+    if(t.status==='pocos')return;
+    if(t.status==='progresa'&&t.diff>0)prog.push({n:vname(s.id,i),d:t.diff,id:s.id});
+    if(t.status==='baja')down.push({n:vname(s.id,i),d:t.diff,id:s.id});
+    if((t.status==='estancado'||t.sinceBest>=3)&&t.n>=3)stall.push({n:vname(s.id,i),s:t.sinceBest,id:s.id});
+  });});
+  if(prog.length){
+    prog.sort(function(a,b){return b.d-a.d;});
+    html+='<br><br><b>📈 Progresando bien:</b><ul>'+prog.slice(0,5).map(function(p){return '<li>'+escHtml(p.n)+' <span class="m-hl">+'+p.d+' kg</span></li>';}).join('')+'</ul>';
+  }
+  if(stall.length){
+    html+='<b>⏸ Estancados</b> (sin mejorar en '+(stall[0].s||3)+'+ sesiones):<ul>'+stall.slice(0,5).map(function(p){return '<li>'+escHtml(p.n)+'</li>';}).join('')+'</ul>';
+  }
+
+  /* 5 · Conclusión y recomendación */
+  html+='<br><b>🎯 Conclusión:</b><br>';
+  var recs=[];
+  order.forEach(function(m){if(m!=='core'&&vol[m]!==undefined&&vol[m]<8)recs.push('sube el volumen de <b>'+MGL[m].toLowerCase()+'</b> (vas bajo)');});
+  if(stall.length)recs.push('en los estancados prueba bajar 10% el peso y reconstruir, o cambia a otra variante desde el desplegit');
+  if(freq<2)recs.push('aumenta la frecuencia a 2-3 días/semana');
+  if(push/Math.max(1,pull)>1.4)recs.push('añade trabajo de espalda para equilibrar');
+  if(!recs.length){html+='Vas muy bien: buena frecuencia, volumen adecuado y progreso constante. Mantén la sobrecarga progresiva (+2,5 kg cuando completes el rango) y sigue así. 💪';}
+  else{html+='Para optimizar: '+recs.slice(0,3).join('; ')+'.';}
+  return html;
+}
+function progressOf(sid,i){
+  var t=exTrend(sid,i),nm=vname(sid,i),le=last(sid,i);
+  if(t.status==='pocos')return '<b>'+escHtml(nm)+'</b>: solo tienes '+t.n+' registro(s). Necesito al menos 2 para ver tendencia.';
+  var icon=t.status==='progresa'?'📈':t.status==='baja'?'📉':'➡️';
+  var txt=icon+' <b>'+escHtml(nm)+'</b><ul>';
+  txt+='<li>Primer registro: '+t.first+' kg → Último: <span class="m-hl">'+t.last+' kg</span></li>';
+  txt+='<li>Tu mejor marca: <span class="m-hl">'+t.best+' kg</span></li>';
+  txt+='<li>'+t.n+' sesiones registradas</li>';
+  if(t.diff>0)txt+='<li>Progreso total: <span style="color:#3DFFA0">+'+t.diff+' kg</span> 🎉</li>';
+  else if(t.diff<0)txt+='<li>Cambio: <span style="color:#FF4D4D">'+t.diff+' kg</span></li>';
+  txt+='</ul>';
+  if(t.sinceBest>=3)txt+='⏸ Llevas '+t.sinceBest+' sesiones sin batir tu marca. Prueba bajar un 10% el peso 1-2 semanas y reconstruir, o cambia de variante para romper el estancamiento.';
+  else if(t.status==='progresa')txt+='✅ Vas progresando bien. Sigue subiendo +2,5 kg cuando completes todas las series.';
+  return txt;
+}
+
+function coachReply(raw){
+  var q=norm(raw);
+
+  /* ── ANÁLISIS COMPLETO ── */
+  if(/analiza|analisis|análisis|conclusion|conclusión|como voy|cómo voy|que tal voy|qué tal voy|como lo hago|evalua|evalúa|evaluar|punto debil|punto débil|que mejorar|qué mejorar|que tal lo|mi rendimiento|mi progreso general|valoracion|valoración|diagnostic|resumen de mi|como estoy|cómo estoy|que opinas|qué opinas/.test(q)){
+    return coachAnalysis();
+  }
+
+  /* ── PROGRESIÓN DE UN EJERCICIO CONCRETO ── */
+  if(/como voy en|cómo voy en|progreso en|evolucion|evolución|como va mi|cómo va mi|tendencia|estoy mejorando en|subiendo en/.test(q)){
+    var hits=findExercise(q);
+    if(hits.length){
+      var seen={},out=[];
+      hits.forEach(function(h){var k=h.sid+h.i;if(seen[k])return;seen[k]=1;out.push(progressOf(h.sid,h.i));});
+      return out.slice(0,3).join('<br><br>');
+    }
+    return 'Dime en qué ejercicio quieres ver tu progreso. Por ejemplo: "cómo voy en press banca" o "evolución de mis dominadas".';
+  }
+
+  /* ── volumen real (mis datos) ── */
+  if(/(mi|cuanto|cuánto).*(volumen|series).*(hago|llevo|semana|musculo)|cuantas series hago|cuántas series hago|equilibrio.*(empuje|tiron|tirón)|estoy equilibrad/.test(q)){
+    return coachAnalysis();
+  }
+
+  /* ── días disponibles ── */
+  if(/\b1\b|\bun\b|\buna\b|solo un|solo 1/.test(q)&&/dia|semana|ir|puedo|entren/.test(q)){
+    var nx=nextSessId();
+    return 'Si <b>solo puedes ir 1 día</b> esta semana, prioriza los básicos pesados que trabajan todo el cuerpo. Mi recomendación: haz la sesión '+sessTag('A')+' <b>Fuerza Base</b> — cubre pecho, espalda, hombro, piernas y bíceps con compuestos:'+sessExList('A')+'Salta los aislamientos si vas justo de tiempo. La próxima semana retomas tu rotación donde la dejaste (te tocaría la '+sessTag(nx)+').';
+  }
+  if(/\b2\b|\bdos\b/.test(q)&&/dia|semana|ir|puedo|entren/.test(q)){
+    var a=nextSessId(),b=ORDER[(ORDER.indexOf(a)+1)%ORDER.length];
+    return 'Con <b>2 días</b> esta semana, haz las dos siguientes de tu rotación: '+sessTag(a)+' y '+sessTag(b)+'.<br><br>Deja al menos un día de descanso entre ambas. Así mantienes el equilibrio empuje/tirón sin perder la continuidad A→B→C.';
+  }
+  if(/\b3\b|\btres\b/.test(q)&&/dia|semana|ir|puedo|entren/.test(q)){
+    return 'Con <b>3 días</b> haces tu programa completo: '+sessTag('A')+' '+sessTag('B')+' '+sessTag('C')+'.<br><br>Idealmente Lunes / Miércoles / Viernes, dejando los fines de semana para el pádel y el fútbol. Es tu esquema ideal. 👌';
+  }
+  if(/\b4\b|\bcuatro\b/.test(q)&&/dia|semana|ir|puedo|entren/.test(q)){
+    return 'Con <b>4 días</b> añades la sesión extra: '+sessTag('A')+' '+sessTag('B')+' '+sessTag('C')+' + '+sessTag('D')+' (Piernas + Complemento).<br><br>La D rellena el hueco de piernas que el pádel y el fútbol no cubren del todo: cuádriceps, glúteos, gemelos y core.';
+  }
+
+  /* ── qué toca hoy / próxima ── */
+  if(/que toca|que hago hoy|que entreno|proxima sesion|toca hoy|hoy que|cual toca/.test(q)){
+    var nx=nextSessId(),ns=gs(nx),lm=getLastMainSessId();
+    return 'Hoy te toca la sesión '+sessTag(nx)+' <b>'+escHtml(ns.name)+'</b>.'+(lm?'<br><br>Tu última sesión principal fue la '+sessTag(lm)+', así que siguiendo la rotación A→B→C te toca esta.':'<br><br>Es tu primera sesión, ¡a por ella!')+sessExList(nx);
+  }
+
+  /* ── récords / PR ── */
+  if(/record|pr\b|marca|mejor levant|maximo|máximo/.test(q)){
+    var prs=[];
+    P.forEach(function(s){s.exs.forEach(function(ex,i){var m=mw(s.id,i);if(m!==null)prs.push({n:vname(s.id,i),m:m,c:s.col,id:s.id});});});
+    if(!prs.length)return 'Aún no tienes pesos registrados. En cuanto guardes algunas series podré decirte tus récords. 💪';
+    prs.sort(function(a,b){return b.m-a.m;});
+    return '🏆 Tus mejores marcas:<ul>'+prs.slice(0,10).map(function(p){return '<li><b>'+escHtml(p.n)+'</b>: <span class="m-hl">'+p.m+' kg</span></li>';}).join('')+'</ul>';
+  }
+
+  /* ── racha / estadísticas ── */
+  if(/racha|seguidos|cuantos dias|cuántos dias|estadistica|progreso|cuanto he entrenado/.test(q)){
+    var dm=buildMap(),dates=Object.keys(dm).sort();
+    if(!dates.length)return 'Todavía no has registrado entrenamientos. ¡Empieza hoy y empezaré a llevarte la cuenta! 📈';
+    return '📊 Tus números:<ul><li>Días entrenados: <span class="m-hl">'+dates.length+'</span></li><li>Racha actual: <span class="m-hl">'+cStreak(dates)+' días</span></li><li>Mejor racha: <span class="m-hl">'+bStreak(dates)+' días</span></li><li>Último entreno: <span class="m-hl">'+f2(dates[dates.length-1])+'</span></li></ul>¡Sigue así! 🔥';
+  }
+
+  /* ── grupos musculares ── */
+  if(/pierna|cuadriceps|cuádriceps|gluteo|glúteo|gemelo|pantorrilla|femoral/.test(q)){
+    return 'Trabajas pierna en estos ejercicios:<ul><li>'+sessTag('A')+' Peso Muerto (cadena posterior)</li><li>'+sessTag('C')+' Sentadilla Búlgara (unilateral)</li><li>'+sessTag('D')+' Prensa, Curl Femoral, Hip Thrust, Pantorrillas (día extra de pierna)</li></ul>Si quieres más volumen de pierna, mete la sesión '+sessTag('D')+' como 4º día.';
+  }
+  if(/pecho|pectoral/.test(q)){
+    return 'Tu pecho lo trabajas en:<ul><li>'+sessTag('A')+' Press Banca (fuerza)</li><li>'+sessTag('B')+' Press Inclinado Mancuernas + Cruce de Poleas (volumen)</li><li>'+sessTag('C')+' Fondos Lastrados + Press Banca Cerrado</li></ul>';
+  }
+  if(/espalda|dorsal|remo|dominada/.test(q)){
+    return 'Tu espalda la trabajas en:<ul><li>'+sessTag('A')+' Remo con Barra + Dominadas + Peso Muerto</li><li>'+sessTag('B')+' Remo en Polea + Jalón Estrecho</li><li>'+sessTag('C')+' Dominadas Lastradas</li></ul>';
+  }
+  if(/hombro|deltoide/.test(q)){
+    return 'Tus hombros los trabajas en:<ul><li>'+sessTag('A')+' Press Militar</li><li>'+sessTag('B')+' Elevaciones Laterales</li><li>'+sessTag('C')+' Face Pulls (salud del manguito)</li></ul>⚡ Las elevaciones laterales y los face pulls son clave para aguantar el pádel sin lesionarte.';
+  }
+  if(/biceps|bíceps|triceps|tríceps|brazo/.test(q)){
+    return 'Brazos:<ul><li>Bíceps: '+sessTag('A')+' Curl Barra · '+sessTag('C')+' Curl Martillo</li><li>Tríceps: '+sessTag('B')+' Tríceps Polea · '+sessTag('C')+' Press Banca Cerrado</li></ul>Si quieres más brazo, la sesión '+sessTag('D')+' extra lleva Curl Predicador y Press Francés.';
+  }
+
+  /* ── lesión / dolor ── */
+  if(/duele|dolor|molesta|lesion|lesión|cargado/.test(q)){
+    var part='esa zona';
+    if(/hombro/.test(q)){
+      return 'Si te molesta el <b>hombro</b> (típico tras el pádel):<ul><li>Cambia el Press Banca/Militar a su variante en <b>máquina</b> (más segura) desde el desplegable de variantes</li><li>NO saltes los <b>Face Pulls</b> — protegen el manguito rotador</li><li>Reduce el peso y sube las repeticiones esta semana</li></ul>Si el dolor es agudo o persiste, descansa y consulta a un fisio.';
+    }
+    if(/rodilla/.test(q)){
+      return 'Si te molesta la <b>rodilla</b> (común por el fútbol):<ul><li>Cambia Sentadilla/Búlgara por <b>Prensa 45°</b> o trabajo de isquios (Curl Femoral)</li><li>Evita rangos profundos si hay dolor</li><li>Calienta bien antes de cargar</li></ul>Si persiste, descansa y consulta a un profesional.';
+    }
+    if(/espalda|lumbar/.test(q)){
+      return 'Si te molesta la <b>espalda baja</b>:<ul><li>Sustituye Peso Muerto por <b>Peso Muerto Rumano ligero</b> o salta esa semana</li><li>Cambia el Remo con Barra por <b>Remo en Máquina con pecho apoyado</b> (sin carga lumbar)</li><li>Refuerza el core</li></ul>Si hay dolor agudo, para y consulta a un fisio.';
+    }
+    return 'Si te molesta '+part+', baja el peso, usa variantes en máquina (más controladas) y prioriza el rango sin dolor. Si el dolor es agudo o no mejora en unos días, descansa y consulta a un fisioterapeuta. No fuerces. 🩺';
+  }
+
+  /* ── peso de un ejercicio concreto ── */
+  if(/cuanto|cuánto|peso|levant|mi press|mi remo|mi sentadilla|mi dominada/.test(q)){
+    var hits=findExercise(q);
+    if(hits.length){
+      var seen={},out=[];
+      hits.forEach(function(h){var k=h.sid+h.i;if(seen[k])return;seen[k]=1;var m=mw(h.sid,h.i),le=last(h.sid,h.i);
+        out.push('<li><b>'+escHtml(vname(h.sid,h.i))+'</b> '+sessTag(h.sid)+': '+(m!==null?'<span class="m-hl">'+m+' kg</span> (mejor marca)'+(le?', última vez el '+f2(le.date):''):'sin datos aún')+'</li>');});
+      return 'Esto es lo que tengo:<ul>'+out.join('')+'</ul>';
+    }
+    return 'Dime el nombre del ejercicio y te digo cuánto has levantado. Por ejemplo: "mi press banca" o "cuánto en dominadas".';
+  }
+
+  /* ── editar ejercicio ── */
+  if(/editar|cambiar nombre|poner otro|personalizar|añadir ejercicio|anadir ejercicio|escribir ejercicio/.test(q)){
+    return 'Para <b>cambiar o personalizar un ejercicio</b>:<ul><li>Entra en el ejercicio desde la pestaña SESIÓN</li><li>Toca el icono <b>✎</b> junto al nombre</li><li>Escribe el nombre que quieras y dale a ✓</li></ul>También puedes editar cada una de las 3 variantes por separado en el desplegable "VARIANTE ACTIVA". Tus cambios se guardan para siempre.';
+  }
+
+  /* ── descanso / cardio / pádel / fútbol ── */
+  if(/padel|pádel|futbol|fútbol|cardio|recuper/.test(q)){
+    return 'Tu rutina ya está pensada para tu pádel (1 día) y fútbol (1 día):<ul><li>No hagas la sesión '+sessTag('A')+' ni '+sessTag('C')+' el día <b>después</b> del pádel (hombros cargados)</li><li>La '+sessTag('B')+' es compatible el día antes del fútbol (no carga piernas)</li><li>Deja al menos 1 día de descanso completo a la semana</li></ul>El deporte ya te da cardio, así que en el gym prioriza fuerza e hipertrofia.';
+  }
+
+  /* ── saludo ── */
+  if(/^(hola|buenas|hey|holi|que tal|qué tal|buenos dias|buenas tardes)/.test(q)){
+    return '¡Hola! 💪 ¿En qué te ayudo hoy? Puedo decirte qué sesión toca, adaptar el entreno si vas justo de días, consultarte pesos y récords, o resolver dudas de entrenamiento (volumen, proteína, descanso...).';
+  }
+  if(/^(gracias|perfecto|genial|vale|ok|guay|estupendo)/.test(q)){
+    return '¡A darle caña! 🔥 Aquí estoy para lo que necesites.';
+  }
+
+  /* ══════ BASE DE CONOCIMIENTO FITNESS (ciencia del entrenamiento) ══════ */
+
+  /* ── volumen / cuántas series ── */
+  if(/volumen|cuantas series|cuántas series|series por semana|series a la semana|series por musculo|cuantas repe.*musculo/.test(q)){
+    return '📚 <b>Volumen de entrenamiento</b> (series por grupo muscular/semana):<ul><li><b>Mínimo eficaz:</b> ~10 series semanales por músculo para hipertrofia óptima (meta-análisis Schoenfeld)</li><li><b>Rango óptimo:</b> 10–20 series. Por debajo de 10 creces menos; por encima de ~20 hay rendimientos decrecientes</li><li><b>Avanzados:</b> a veces basta 4–10 series si entrenas cerca del fallo (RPE 8–9)</li></ul>Cada serie extra añade ~0,3–0,4% de hipertrofia. Tu rutina ya reparte bien el volumen entre las 3-4 sesiones. Cuenta las series indirectas también (un press trabaja algo de tríceps).';
+  }
+
+  /* ── repeticiones / rangos ── */
+  if(/cuantas repe|cuántas repe|rango de repe|repeticiones|reps para|cuantas reps|cuántas reps/.test(q)){
+    return '📚 <b>Rangos de repeticiones</b> (NSCA/ACSM):<ul><li><b>Fuerza:</b> 1–6 reps · 85%+ del 1RM · descanso 3–5 min</li><li><b>Hipertrofia:</b> 6–12 reps · 67–85% del 1RM · descanso 1–2 min</li><li><b>Resistencia:</b> 15+ reps · &lt;67% 1RM · descanso &lt;1 min</li></ul>La ciencia actual dice que puedes crecer en cualquier rango si llegas cerca del fallo y acumulas volumen, pero el 6–12 es el más eficiente para músculo. En compuestos pesados (press, peso muerto) usa 4–6; en aislamientos sube a 12–15.';
+  }
+
+  /* ── proteína / nutrición ── */
+  if(/proteina|proteína|comer|nutricion|nutrición|dieta|cuanto debo comer|gramos|alimenta/.test(q)){
+    return '📚 <b>Proteína para ganar músculo</b> (ACSM / meta-análisis):<ul><li><b>Objetivo:</b> 1,6–2,2 g por kg de peso corporal al día</li><li>Ej.: si pesas 75 kg → unos <span class="m-hl">120–165 g/día</span></li><li>Reparte en 3–5 comidas de 20–40 g cada una</li><li>Por encima de ~2,2 g/kg apenas hay beneficio extra</li></ul>Fuentes buenas: pollo, huevos, pescado, lácteos, legumbres, whey. Y recuerda: para <b>ganar músculo</b> necesitas un ligero superávit calórico; para <b>definir</b>, un déficit moderado manteniendo la proteína alta.';
+  }
+
+  /* ── descanso entre series ── */
+  if(/descanso entre series|cuanto descanso|cuánto descanso|tiempo entre series|pausa entre/.test(q)){
+    return '📚 <b>Descanso entre series</b>:<ul><li><b>Compuestos pesados / fuerza</b> (press banca, peso muerto, sentadilla): 2–5 min</li><li><b>Hipertrofia</b> (la mayoría): 1,5–2 min</li><li><b>Aislamientos y bombeo</b> (laterales, curl, gemelos): 45–90 s</li></ul>Descansar lo suficiente te deja completar más reps con buena técnica = más estímulo. El timer de la app ya está ajustado a cada ejercicio (lo activas al marcar una serie ✓).';
+  }
+
+  /* ── sobrecarga progresiva ── */
+  if(/sobrecarga|progresar|subir peso|cuando subir|progresion|progresión|mejorar|estancad|plateau|no avanzo/.test(q)){
+    return '📚 <b>Sobrecarga progresiva</b> (la clave de todo):<ul><li>Sube el peso cuando completes <b>todas</b> las series en el rango alto con buena técnica</li><li>Incremento típico: <span class="m-hl">+2,5 kg</span> en compuestos, +1–2 kg en aislamientos</li><li>Si no puedes subir peso, suma 1 repetición o 1 serie</li></ul>Si te estancas: revisa que duermes y comes bien, baja un poco el volumen 1 semana (descarga/deload) y vuelve. El estancamiento casi siempre es recuperación, no falta de esfuerzo. La app te marca tu mejor peso y tu 1RM estimado para que veas el progreso.';
+  }
+
+  /* ── RPE / fallo ── */
+  if(/\brpe\b|fallo|al fallo|cerca del fallo|esfuerzo|rir|intensidad/.test(q)){
+    return '📚 <b>RPE e intensidad</b>:<ul><li><b>RPE</b> = esfuerzo percibido (1–10). RPE 8 = te quedaban ~2 reps en el tanque</li><li>Para hipertrofia entrena a <b>RPE 7–9</b> (1–3 reps en reserva)</li><li>No hace falta llegar al fallo total en cada serie: fatiga mucho y no crece más</li><li>En compuestos pesados deja 1–2 reps en reserva por seguridad</li></ul>Tu rutina marca RPE 7–8 en la mayoría de ejercicios. Llega cerca del fallo en aislamientos, más conservador en peso muerto y sentadilla.';
+  }
+
+  /* ── frecuencia ── */
+  if(/frecuencia|cuantas veces.*musculo|cuántas veces.*musculo|veces por semana.*musculo|cada cuanto entreno/.test(q)){
+    return '📚 <b>Frecuencia</b>: entrenar cada grupo muscular <b>2 veces por semana</b> suele dar mejor resultado que 1, porque repartes el volumen y mantienes la síntesis proteica activa. Con tu rotación A→B→C entrenas empuje y tirón con buena frecuencia. Lo importante al final es el <b>volumen semanal total</b>, no tanto cómo lo repartes.';
+  }
+
+  /* ── calentamiento ── */
+  if(/calenta|calentar|warm|antes de entrenar|movilidad/.test(q)){
+    return '📚 <b>Calentamiento</b>:<ul><li>5 min de cardio suave para subir pulsaciones</li><li>Series de aproximación: 2–3 series ligeras del primer ejercicio subiendo peso</li><li>Movilidad específica de la articulación que vas a usar</li></ul>No hagas estiramientos estáticos largos antes de levantar (reducen la fuerza). Déjalos para el final. Calentar bien el hombro es clave para ti por el pádel.';
+  }
+
+  /* ── deload / descanso semana ── */
+  if(/deload|descarga|semana de descanso|sobreentren|descansar una semana|quemado/.test(q)){
+    return '📚 <b>Descarga (deload)</b>: cada 4–8 semanas, o cuando te notes estancado/muy cansado, haz una semana suave: baja el volumen a la mitad o usa ~60% del peso habitual. Sirve para que el cuerpo se recupere y supercompense. Señales de que la necesitas: bajada de fuerza, mal sueño, articulaciones molestas, desmotivación. Descansar también es entrenar.';
+  }
+
+  /* ── sueño / recuperación ── */
+  if(/dormir|sueño|sueno|recuperar|recuperacion|recuperación|descanso noche/.test(q)){
+    return '📚 <b>Sueño y recuperación</b>: el músculo crece <b>descansando</b>, no en el gym. Duerme 7–9 h. La falta de sueño baja la testosterona, sube el cortisol y reduce la recuperación y la fuerza. Prioriza: dormir bien > comer suficiente proteína > el propio entreno. Si entrenas duro pero duermes mal, dejas gains sobre la mesa.';
+  }
+
+  /* ── técnica general ── */
+  if(/tecnica|técnica|como hago|cómo hago|forma correcta|ejecu/.test(q)){
+    return 'Cada ejercicio de la app trae un <b>consejo de técnica</b> dentro (ábrelo y lee el recuadro de color). Reglas generales:<ul><li>Controla la fase de bajada (2–3 s), no dejes caer el peso</li><li>Rango completo de movimiento &gt; más peso con medio rango</li><li>Si tienes que balancearte para mover el peso, es demasiado</li><li>Técnica perfecta antes que ego</li></ul>Dime un ejercicio concreto y te doy sus claves.';
+  }
+
+  /* ── definir / perder grasa ── */
+  if(/definir|perder grasa|adelgazar|bajar peso|marcar|definicion|definición|quemar grasa/.test(q)){
+    return '📚 <b>Definir (perder grasa sin perder músculo)</b>:<ul><li>Déficit calórico <b>moderado</b> (~300–500 kcal/día), no agresivo</li><li>Mantén la proteína <b>alta</b> (2 g/kg o más) para proteger el músculo</li><li><b>Sigue levantando pesado</b> — es lo que le dice al cuerpo que conserve músculo</li><li>El cardio (tu pádel y fútbol) ayuda al déficit</li></ul>No hagas dietas extremas: perderías músculo y fuerza. Paciencia: 0,5 kg/semana es un buen ritmo.';
+  }
+
+  /* ── creatina / suplementos ── */
+  if(/creatina|suplemento|proteina en polvo|whey|preentreno|pre-entreno|cafeina|cafeína/.test(q)){
+    return '📚 <b>Suplementos que SÍ funcionan</b> (el resto suele ser marketing):<ul><li><b>Creatina monohidrato:</b> 3–5 g/día, el más probado. Mejora fuerza y volumen. Tómala cualquier hora, todos los días</li><li><b>Proteína whey:</b> útil para llegar a tu objetivo de proteína, no imprescindible si comes bien</li><li><b>Cafeína:</b> 3–6 mg/kg pre-entreno mejora rendimiento</li></ul>Lo básico (dormir, comer, entrenar) importa 100 veces más que cualquier suplemento.';
+  }
+
+  /* ── ayuda / no entiende ── */
+  return 'Soy tu entrenador y analizo tus datos reales. Puedo ayudarte con:<ul><li><b>📊 Análisis:</b> "analiza mi entrenamiento", "¿qué debo mejorar?", "¿cómo voy?", "mi equilibrio empuje/tirón"</li><li><b>Progreso:</b> "¿cómo voy en press banca?", "evolución de mis dominadas"</li><li><b>Tu rutina:</b> "¿qué toca hoy?", "solo puedo ir 1/2/3 días", "mis récords", "mi racha"</li><li><b>Por músculo:</b> "ejercicios de pierna/pecho/espalda/hombro/brazo"</li><li><b>Lesiones:</b> "me duele el hombro/rodilla/espalda"</li><li><b>Ciencia:</b> volumen, repeticiones, proteína, descanso, sobrecarga, RPE, deload, sueño, definir, creatina...</li></ul>Pregúntame con tus palabras. 😉';
+}
 function closePwa(){document.getElementById('pwa-hint').className='hide';try{localStorage.setItem('pwa_ok','1');}catch(e){}}
 
 /* ══ INIT ══ */
