@@ -349,6 +349,12 @@ input[type=number]{-moz-appearance:textfield}
     </div>
     <div class="pills" id="lb-pills"></div>
   </div>
+  <div class="date-row">
+    <span class="date-lbl">FECHA</span>
+    <input type="date" class="date-inp" id="date-inp" onchange="onDateChange()">
+    <button class="date-today-btn" onclick="setDateToday()">HOY</button>
+  </div>
+  <div class="date-warn hide" id="date-warn"></div>
   <div class="swrap">
     <div class="shdr" id="sets-hdr">SERIES HOY</div>
     <div id="setrows"></div>
@@ -356,7 +362,7 @@ input[type=number]{-moz-appearance:textfield}
   <button class="add-set" onclick="addSet()">+ añadir serie</button>
   <div class="nwrap">
     <div class="nlbl">NOTA OPCIONAL</div>
-    <textarea class="ninp" id="noteinp" rows="2" placeholder="sensaciones, fatiga, ajuste de peso..."></textarea>
+    <textarea class="ninp" id="noteinp" rows="2" placeholder="sensaciones, fatiga, ajuste de peso..." oninput="draftSave()"></textarea>
   </div>
   <div class="svwrap">
     <button class="svbtn" id="svbtn" onclick="doSave()">GUARDAR</button>
@@ -614,14 +620,13 @@ function idbSet(data){
 }
 
 /* ══ STATE ══ */
-var db={logs:{},vc:{},sessLog:[],cn:{}};
-var st={sess:'A',exI:null,xtra:0,tInt:null,tSec:0,TMAX:90,cY:new Date().getFullYear(),cM:new Date().getMonth(),vOpen:false,editingName:null};
+var db={logs:{},vc:{},sessLog:[],cn:{},drafts:{}};
+var st={sess:'A',exI:null,xtra:0,tInt:null,tSec:0,TMAX:90,cY:new Date().getFullYear(),cM:new Date().getMonth(),vOpen:false,editingName:null,selDate:null};
 
 function load(){
-  /* Carga síncrona desde localStorage (rápida, no bloquea UI) */
   try{
     var r=localStorage.getItem('pb_v5');
-    if(r){var p=JSON.parse(r);db.logs=p.logs||{};db.vc=p.vc||{};db.sessLog=p.sessLog||[];db.cn=p.cn||{};}
+    if(r){var p=JSON.parse(r);db.logs=p.logs||{};db.vc=p.vc||{};db.sessLog=p.sessLog||[];db.cn=p.cn||{};db.drafts=p.drafts||{};}
   }catch(e){storageStatus='err';}
 }
 
@@ -634,7 +639,7 @@ function loadFromIDBAsync(){
     var idbTotal=(Object.keys(idbData.logs||{}).length+(idbData.sessLog||[]).length);
     var localTotal=(Object.keys(db.logs).length+db.sessLog.length);
     if(localEmpty||idbTotal>localTotal){
-      db.logs=idbData.logs||{};db.vc=idbData.vc||{};db.sessLog=idbData.sessLog||[];db.cn=idbData.cn||{};
+      db.logs=idbData.logs||{};db.vc=idbData.vc||{};db.sessLog=idbData.sessLog||[];db.cn=idbData.cn||{};db.drafts=idbData.drafts||{};
       try{localStorage.setItem('pb_v5',JSON.stringify(db));}catch(e){}
       initPick();renderNextCard();renderExList();
       updateBackupStatus('Datos restaurados desde respaldo seguro');
@@ -643,20 +648,57 @@ function loadFromIDBAsync(){
 }
 
 function save(){
-  /* Guarda en localStorage (sync) + IndexedDB (async). Ambos a la vez. */
+  /* Guarda en localStorage (sync) + IndexedDB (async). VERIFICA leyendo después de escribir. */
   var payload=JSON.stringify(db);
   var lsOK=false;
   try{
     localStorage.setItem('pb_v5',payload);
     localStorage.setItem('pb_v5_ts',Date.now().toString());
-    lsOK=true;
+    /* verificación: leer lo que acabamos de escribir */
+    var check=localStorage.getItem('pb_v5');
+    lsOK=(check===payload);
   }catch(e){storageStatus='warn';}
   idbSet(db).then(function(idbOK){
     if(!lsOK&&!idbOK){storageStatus='err';updateBackupStatus('⚠ Error al guardar — exporta YA tus datos','err');}
-    else if(idbOK&&lsOK){storageStatus='ok';updateBackupStatus('✓ Guardado · localStorage + IndexedDB','ok');}
-    else{storageStatus='warn';updateBackupStatus('⚠ Solo guardado en uno de dos sistemas','warn');}
+    else if(idbOK&&lsOK){storageStatus='ok';updateBackupStatus('✓ Guardado y verificado','ok');}
+    else{storageStatus='warn';updateBackupStatus('⚠ Guardado parcial (1 de 2 sistemas)','warn');}
   });
 }
+
+/* ══ BORRADOR AUTOMÁTICO (guarda cada tecla, sin pulsar GUARDAR) ══ */
+function draftKey(){return lk(st.sess,st.exI)+'@'+(st.selDate||td());}
+function draftSave(){
+  if(st.exI===null)return;
+  var n=nSets(),sets=[];
+  for(var i=0;i<n;i++){
+    var wi=document.getElementById('w'+i),ri=document.getElementById('r'+i);
+    sets.push({w:wi?wi.value.trim():'',r:ri?ri.value.trim():''});
+  }
+  var note=document.getElementById('noteinp')?document.getElementById('noteinp').value:'';
+  var hasContent=note.trim()!==''||sets.some(function(s){return s.w!==''||s.r!=='';});
+  if(hasContent){
+    db.drafts[draftKey()]={sets:sets,note:note,xtra:st.xtra};
+  } else {
+    delete db.drafts[draftKey()];
+  }
+  save();
+}
+function draftRestore(){
+  var d=db.drafts[draftKey()];
+  if(!d)return false;
+  /* recrear series extra si las había */
+  var base=gs().exs[st.exI].s;
+  var need=(d.sets||[]).length;
+  while(base+st.xtra<need){makeRow(base+st.xtra,last(st.sess,st.exI));st.xtra++;}
+  (d.sets||[]).forEach(function(sv,i){
+    var wi=document.getElementById('w'+i),ri=document.getElementById('r'+i);
+    if(wi&&sv.w){wi.value=sv.w;wi.classList.add('has');}
+    if(ri&&sv.r)ri.value=sv.r;
+  });
+  if(d.note)document.getElementById('noteinp').value=d.note;
+  return true;
+}
+function draftClear(){delete db.drafts[draftKey()];save();}
 
 function updateBackupStatus(msg,level){
   var el=document.getElementById('backup-status');if(el){el.textContent=msg;el.className='backup-status'+(level==='err'?' err':level==='warn'?' warn':'');}
@@ -945,11 +987,14 @@ function finishSess(){
 
 /* ══ EX VIEW ══ */
 function openEx(idx){
-  st.exI=idx;st.xtra=0;st.vOpen=false;st.editingName=null;
+  st.exI=idx;st.xtra=0;st.vOpen=false;st.editingName=null;st.selDate=td();
   var s=gs(),ex=s.exs[idx],le=last(st.sess,idx);
   st.TMAX=ex.rest||90;
   renderExName();
   document.getElementById('pr-badge').className='pr-badge';
+  document.getElementById('date-inp').value=st.selDate;
+  document.getElementById('date-inp').max=td();
+  document.getElementById('date-warn').className='date-warn hide';
   var tb=document.getElementById('tipbox');tb.textContent=ex.tip;
   tb.style.background=s.col+'0e';tb.style.borderColor=s.col+'22';
   var ob=document.getElementById('orm-box');
@@ -974,6 +1019,9 @@ function openEx(idx){
   document.getElementById('sets-hdr').textContent='SERIES HOY  ·  '+f2(td());
   buildRows(ex.s,le);
   document.getElementById('noteinp').value='';
+  /* restaurar borrador si lo había (datos escritos sin guardar) */
+  var restored=draftRestore();
+  if(restored)updateBackupStatus('✓ Recuperado lo que habías escrito','ok');
   var sb=document.getElementById('svbtn');sb.style.background=s.col;sb.style.color=s.dark?'#111':'#fff';sb.textContent='GUARDAR';sb.className='svbtn';
   document.getElementById('v-sess').className='view';
   document.getElementById('v-ex').className='view on';
@@ -1007,6 +1055,26 @@ function saveExName(){var inp=document.getElementById('ex-name-inp');if(!inp)ret
 function cancelExName(){st.editingName=null;renderExName();}
 function resetExName(){setCustomName(st.sess,st.exI,gv(st.sess,st.exI),'');renderExName();renderVariantPicker();}
 
+/* ══ FECHA (registrar en días pasados) ══ */
+function onDateChange(){
+  var inp=document.getElementById('date-inp');
+  var v=inp.value;
+  if(!v){st.selDate=td();inp.value=td();return;}
+  if(v>td()){v=td();inp.value=v;}
+  st.selDate=v;
+  var warn=document.getElementById('date-warn');
+  if(v!==td()){
+    warn.className='date-warn';
+    warn.textContent='⚠ Registrando en una fecha pasada: '+f2(v);
+  } else warn.className='date-warn hide';
+  /* refrescar "última" y placeholders según fecha elegida no es necesario; se guarda con esa fecha */
+}
+function setDateToday(){
+  st.selDate=td();
+  document.getElementById('date-inp').value=td();
+  document.getElementById('date-warn').className='date-warn hide';
+}
+
 function renderVariantPicker(){
   var s=gs(),ex=s.exs[st.exI],vi=gv(st.sess,st.exI);
   document.getElementById('vp-cur').textContent=vnameCustom(st.sess,st.exI,vi);
@@ -1031,12 +1099,34 @@ function renderVariantPicker(){
     if(!editing){(function(v2){o.onclick=function(){selVar(v2);};})(j);}
     vl.appendChild(o);
   });
+  /* ── opción PERSONALIZAR: escribir ejercicio libre ── */
+  var custom=document.createElement('div');custom.className='vp-custom';
+  var curName=vnameCustom(st.sess,st.exI,vi);
+  custom.innerHTML='<div class="vp-custom-lbl">✏️ ESCRIBIR EJERCICIO PERSONALIZADO</div>'+
+    '<div class="vp-custom-row">'+
+    '<input type="text" class="vp-custom-inp" id="custom-ex-inp" placeholder="Escribe el nombre que quieras..." maxlength="40" value="'+escAttr(isCustomName(st.sess,st.exI,vi)?curName:'')+'">'+
+    '<button class="vp-custom-btn" onclick="saveCustomEx()">GUARDAR</button>'+
+    '</div>'+
+    '<div class="vp-custom-hint">Se aplica a la variante activa ('+escHtml(ex.vs[vi].n)+') y se guarda para siempre. Para volver al original usa el botón ↶.</div>';
+  vl.appendChild(custom);
   if(st.editingName&&st.editingName.indexOf('var:')===0){
     var j=parseInt(st.editingName.split(':')[1]);
     var inp=document.getElementById('var-inp-'+j);
     if(inp){inp.focus();try{inp.setSelectionRange(inp.value.length,inp.value.length);}catch(e){}
       inp.addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();saveVarName(j);}else if(e.key==='Escape'){cancelVarName();}});}
   }
+}
+function saveCustomEx(){
+  var inp=document.getElementById('custom-ex-inp');if(!inp)return;
+  var vi=gv(st.sess,st.exI);
+  setCustomName(st.sess,st.exI,vi,inp.value);
+  renderExName();
+  renderVariantPicker();
+  /* feedback: mantener desplegable abierto un momento y cerrarlo */
+  var cur=document.getElementById('vp-cur');
+  if(cur){var prev=cur.style.color;cur.style.color='var(--gr)';setTimeout(function(){cur.style.color=prev;},800);}
+  toggleVars();
+  renderExList();
 }
 function editVarName(j){st.editingName='var:'+j;renderVariantPicker();}
 function saveVarName(j){var inp=document.getElementById('var-inp-'+j);if(!inp)return;setCustomName(st.sess,st.exI,j,inp.value);st.editingName=null;renderVariantPicker();if(j===gv(st.sess,st.exI))renderExName();}
@@ -1063,7 +1153,9 @@ function makeRow(i,le){
     '<div class="chk" id="ck'+i+'">○</div>';
   document.getElementById('setrows').appendChild(row);
   var wi=document.getElementById('w'+i);
-  wi.addEventListener('input',function(){wi.classList.toggle('has',wi.value!=='');});
+  wi.addEventListener('input',function(){wi.classList.toggle('has',wi.value!=='');draftSave();});
+  var ri2=document.getElementById('r'+i);
+  ri2.addEventListener('input',function(){draftSave();});
   (function(ii){document.getElementById('ck'+ii).onclick=function(){tChk(ii);};})(i);
 }
 function addSet(){makeRow(nSets(),last(st.sess,st.exI));st.xtra++;}
@@ -1088,7 +1180,15 @@ function doSave(){
   if(!sets.length){var sb=document.getElementById('svbtn');sb.textContent='⚠ Añade al menos 1 serie';setTimeout(function(){sb.textContent='GUARDAR';},1800);return;}
   var isPR=chkPR(sets);
   var k=lk(st.sess,st.exI);if(!db.logs[k])db.logs[k]=[];
-  db.logs[k].push({date:td(),sets:sets,note:document.getElementById('noteinp').value.trim(),vi:gv(st.sess,st.exI)});
+  var saveDate=st.selDate||td();
+  db.logs[k].push({date:saveDate,sets:sets,note:document.getElementById('noteinp').value.trim(),vi:gv(st.sess,st.exI)});
+  /* ordenar por fecha para que "última" y la progresión sean correctas */
+  db.logs[k].sort(function(a,b){return a.date<b.date?-1:a.date>b.date?1:0;});
+  /* registrar la sesión en esa fecha para la rotación/calendario */
+  if(!db.sessLog.some(function(sl){return sl.date===saveDate&&sl.sid===st.sess;})){
+    db.sessLog.push({date:saveDate,sid:st.sess});
+  }
+  draftClear();
   save();
   if(isPR)document.getElementById('pr-badge').className='pr-badge on';
   var sb=document.getElementById('svbtn');sb.className='svbtn ok';sb.textContent='✓ GUARDADO';
@@ -1609,6 +1709,10 @@ function coachReply(raw){
 function closePwa(){document.getElementById('pwa-hint').className='hide';try{localStorage.setItem('pwa_ok','1');}catch(e){}}
 
 /* ══ INIT ══ */
+window.onerror=function(msg,src,line){
+  try{updateBackupStatus('⚠ Error interno (línea '+line+'): '+msg,'err');}catch(e){}
+  return false;
+};
 idbReady=openIDB();
 load();
 var now=new Date();
